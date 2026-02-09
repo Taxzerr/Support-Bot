@@ -7,10 +7,12 @@ import tempfile
 import re
 import unicodedata
 import logging
+from keep_alive import keep_alive
 from discord import app_commands
 from discord.ext import commands
 from dotenv import load_dotenv
 from datetime import datetime
+
 
 # ---------------- Logging ----------------
 logging.basicConfig(
@@ -1861,4 +1863,6 @@ async def plus_rename(ctx: commands.Context, *, new_name: str):
     await ctx.send(f"✅ Salon renommé en `{candidate}`.")
 
 # ---------- Run ----------
+
+keep_alive()
 bot.run(TOKEN)
