@@ -1,0 +1,119 @@
+{
+  "1404387333112987768": {
+    "support_channel_id": null,
+    "categories": [
+      {
+        "label": "Gestion Staff",
+        "description": "Candidature, rôles ou rank up",
+        "emoji": "🔰",
+        "notify_role_id": null,
+        "close_role_ids": []
+      },
+      {
+        "label": "Partenariat",
+        "description": "Demande de partenariat",
+        "emoji": "🤝",
+        "notify_role_id": null,
+        "close_role_ids": []
+      },
+      {
+        "label": "Autre",
+        "description": "Autre demande",
+        "emoji": "❓",
+        "notify_role_id": null,
+        "close_role_ids": []
+      }
+    ],
+    "open_tickets": {}
+  },
+  "1438286559530192898": {
+    "support_channel_id": null,
+    "categories": [
+      {
+        "label": "Gestion Staff",
+        "description": "Candidature, rôles ou rank up",
+        "emoji": "🔰",
+        "notify_role_id": null,
+        "close_role_ids": []
+      },
+      {
+        "label": "Partenariat",
+        "description": "Demande de partenariat",
+        "emoji": "🤝",
+        "notify_role_id": null,
+        "close_role_ids": []
+      },
+      {
+        "label": "Autre",
+        "description": "Autre demande",
+        "emoji": "❓",
+        "notify_role_id": null,
+        "close_role_ids": []
+      }
+    ],
+    "open_tickets": {}
+  },
+  "1439395961804951727": {
+    "support_channel_id": null,
+    "categories": [
+      {
+        "label": "Gestion Staff",
+        "description": "Candidature, rôles ou rank up",
+        "emoji": "🔰",
+        "notify_role_id": null,
+        "close_role_ids": []
+      },
+      {
+        "label": "Partenariat",
+        "description": "Demande de partenariat",
+        "emoji": "🤝",
+        "notify_role_id": null,
+        "close_role_ids": []
+      },
+      {
+        "label": "Autre",
+        "description": "Autre demande",
+        "emoji": "❓",
+        "notify_role_id": null,
+        "close_role_ids": []
+      }
+    ],
+    "open_tickets": {}
+  },
+  "1470040710869815339": {
+    "support_channel_id": null,
+    "categories": [
+      {
+        "label": "Gestion Staff",
+        "description": "Candidature, rôles ou rank up",
+        "emoji": "🔰",
+        "notify_role_id": null,
+        "close_role_ids": []
+      },
+      {
+        "label": "Partenariat",
+        "description": "Demande de partenariat",
+        "emoji": "🤝",
+        "notify_role_id": null,
+        "close_role_ids": []
+      },
+      {
+        "label": "Autre",
+        "description": "Autre demande",
+        "emoji": "❓",
+        "notify_role_id": null,
+        "close_role_ids": []
+      }
+    ],
+    "open_tickets": {
+      "1470274413680136253": {
+        "channel_id": 1470274413680136253,
+        "channel_name": "suggestiontests-emmaacln",
+        "owner_id": 1214463245256097795,
+        "claimed_by": 1214463245256097795,
+        "category": "Suggestion/Tests",
+        "message_id": 1470274414955335702
+      }
+    }
+  }
+}
