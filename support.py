@@ -105,6 +105,8 @@ def get_gcfg(cfg, guild_id):
     if gid not in cfg:
         cfg[gid] = {
             "support_channel_id": None,
+            "staff_role_ids": [],   # <-- nouvelle clé: liste d'IDs de rôles "staff"
+            "allow_owner_close": False,
             "categories": [
                 {
                     "label": "Gestion Staff",
@@ -131,6 +133,12 @@ def get_gcfg(cfg, guild_id):
             # mapping str(channel.id) -> { channel_id, channel_name, owner_id, claimed_by, category, message_id }
             "open_tickets": {}
         }
+    # ensure keys exist even after upgrade
+    g = cfg[gid]
+    g.setdefault("staff_role_ids", [])
+    g.setdefault("allow_owner_close", False)
+    g.setdefault("categories", [])
+    g.setdefault("open_tickets", {})
     return cfg[gid]
 
 
@@ -156,9 +164,9 @@ def build_support_embed():
         color=discord.Color.from_rgb(54, 57, 63)
     )
     embed.add_field(name="", value="> **L’assistance est disponible 24h/24 et 7j/7.**", inline=False)
-    embed.add_field(name="", value="━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", inline=False)
+    embed.add_field(name="", value="---------------------------------------------", inline=False)
     embed.add_field(name="", value="• Cliquez sur le menu déroulant ci-dessous !", inline=False)
-    embed.add_field(name="", value="━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", inline=False)
+    embed.add_field(name="", value="---------------------------------------------", inline=False)
     embed.add_field(name="", value="• Sélectionnez la catégorie adaptée à votre demande !", inline=False)
     embed.set_footer(text="Fast Support • v2.5")
     return embed
@@ -190,7 +198,7 @@ def set_status_in_embed(embed: discord.Embed, new_status: str):
         try:
             val = (f.value or "").lower()
             # motifs de statut connus — adaptables si tu veux détecter d'autres formulations
-            if val.strip().startswith("• le ticket") or "pris en charge" in val or "en attente" in val:
+            if val.strip().startswith("• le ticket") or STATUS_SEARCH in val or "en attente" in val:
                 idx = i
                 break
         except Exception:
@@ -238,6 +246,87 @@ async def _delete_message_later(msg: discord.Message, delay: float = 3.0):
         pass
 
 
+# ---------------- Permission helpers (nouveau) ----------------
+def _member_has_any_role_id(member: discord.Member, role_ids):
+    if not role_ids:
+        return False
+    try:
+        ids = {int(x) for x in role_ids}
+    except Exception:
+        ids = set()
+    return any((r.id in ids) for r in member.roles)
+
+
+def user_can_manage_tickets(member: discord.Member, guild: discord.Guild, guild_cfg: dict, category_label: str = None, ticket_entry: dict = None) -> bool:
+    """
+    Résout si `member` est considéré comme staff / autorisé pour les actions sur tickets.
+    Ordre des checks :
+      1) owner du serveur
+      2) administrator
+      3) staff_role_ids configurés
+      4) close_role_ids pour la catégorie (si fournie)
+      5) fallback permissions (manage_messages / manage_channels)
+      6) owner du ticket (si allow_owner_close True dans cfg)
+      7) fallback legacy: rôle nommé STAFF_ROLE
+    """
+    # 1) owner du serveur
+    try:
+        if member.id == guild.owner_id:
+            return True
+    except Exception:
+        pass
+
+    # 2) administrator
+    try:
+        if member.guild_permissions.administrator:
+            return True
+    except Exception:
+        pass
+
+    # 3) staff_role_ids configurés
+    try:
+        if _member_has_any_role_id(member, guild_cfg.get("staff_role_ids", [])):
+            return True
+    except Exception:
+        pass
+
+    # 4) close_role_ids pour la catégorie
+    if category_label:
+        try:
+            for c in guild_cfg.get("categories", []):
+                if c.get("label") == category_label:
+                    if _member_has_any_role_id(member, c.get("close_role_ids", []) or []):
+                        return True
+                    break
+        except Exception:
+            pass
+
+    # 5) fallback permissions
+    try:
+        perms = member.guild_permissions
+        if perms.manage_messages or perms.manage_channels or perms.kick_members:
+            return True
+    except Exception:
+        pass
+
+    # 6) owner du ticket (optionnel)
+    try:
+        if ticket_entry and guild_cfg.get("allow_owner_close", False):
+            owner_id = int(ticket_entry.get("owner_id") or ticket_entry.get("owner") or -1)
+            if member.id == owner_id:
+                return True
+    except Exception:
+        pass
+
+    # 7) legacy fallback: role named STAFF_ROLE
+    try:
+        staff_role = discord.utils.get(member.guild.roles, name=STAFF_ROLE)
+        if staff_role and staff_role in member.roles:
+            return True
+    except Exception:
+        pass
+
+    return False
 
 
 # ---------------- Close ticket view (global) ----------------
@@ -250,28 +339,9 @@ class CloseTicketView(discord.ui.View):
         guild = interaction.guild
         channel = interaction.channel
 
-        cfg = get_gcfg(GCFG, guild.id)
-        allowed = False
-
-        # admin
-        if interaction.user.guild_permissions.administrator:
-            allowed = True
-        else:
-            # essayer d'identifier la catégorie via le topic
-            category_label = None
-            if isinstance(channel.topic, str) and channel.topic.startswith("ticket_category:"):
-                category_label = channel.topic.split("ticket_category:", 1)[1]
-
-            if category_label:
-                for c in cfg.get("categories", []):
-                    if c.get("label") == category_label:
-                        close_ids = c.get("close_role_ids", []) or []
-                        user_role_ids = {r.id for r in interaction.user.roles}
-                        if any(rid in user_role_ids for rid in close_ids):
-                            allowed = True
-                        break
-
-        if not allowed:
+        gcfg = get_gcfg(GCFG, guild.id)
+        # use centralized helper
+        if not user_can_manage_tickets(interaction.user, guild, gcfg, category_label=(channel.topic.split("ticket_category:",1)[1] if (isinstance(channel.topic, str) and channel.topic.startswith("ticket_category:")) else None)):
             await interaction.response.send_message("⛔ Tu n'as pas la permission de fermer ce ticket.", ephemeral=True)
             return
 
@@ -327,6 +397,11 @@ class TicketActionsView(discord.ui.View):
             await interaction.response.send_message(f"🛑 Ce ticket est déjà pris en charge par {claimed_member.mention if claimed_member else 'quelqu’un'}.", ephemeral=True)
             return
 
+        # check permission: staff or category close role (ou propriétaire si autorisé)
+        if not user_can_manage_tickets(interaction.user, guild, gcfg, category_label=self.category_label, ticket_entry=entry):
+            await interaction.response.send_message("⛔ Tu n'as pas la permission de prendre en charge ce ticket.", ephemeral=True)
+            return
+
         entry["claimed_by"] = interaction.user.id
         try:
             await save_config(GCFG)
@@ -377,32 +452,11 @@ class TicketActionsView(discord.ui.View):
         channel = interaction.channel
         gcfg = get_gcfg(GCFG, guild.id)
 
-        allowed = False
-        # admin
-        if interaction.user.guild_permissions.administrator:
-            allowed = True
-
-        # claim
         ot = gcfg.get("open_tickets", {})
         entry = ot.get(str(self.channel_id))
-        if entry and entry.get("claimed_by") and int(entry["claimed_by"]) == interaction.user.id:
-            allowed = True
 
-        # category close roles
-        for c in gcfg.get("categories", []):
-            if c.get("label") == self.category_label:
-                close_ids = c.get("close_role_ids", []) or []
-                user_role_ids = {r.id for r in interaction.user.roles}
-                if any(rid in user_role_ids for rid in close_ids):
-                    allowed = True
-                break
-
-        # legacy staff role
-        staff_role = discord.utils.get(guild.roles, name=STAFF_ROLE)
-        if staff_role and staff_role in interaction.user.roles:
-            allowed = True
-
-        if not allowed:
+        # centralize permission check
+        if not user_can_manage_tickets(interaction.user, guild, gcfg, category_label=self.category_label, ticket_entry=entry):
             await interaction.response.send_message("⛔ Tu n'as pas l'autorisation pour résoudre ce ticket.", ephemeral=True)
             return
 
@@ -444,32 +498,11 @@ class TicketActionsView(discord.ui.View):
         channel = interaction.channel
         gcfg = get_gcfg(GCFG, guild.id)
 
-        allowed = False
-        # admin
-        if interaction.user.guild_permissions.administrator:
-            allowed = True
-
-        # claim
         ot = gcfg.get("open_tickets", {})
         entry = ot.get(str(self.channel_id))
-        if entry and entry.get("claimed_by") and int(entry["claimed_by"]) == interaction.user.id:
-            allowed = True
 
-        # category close roles
-        for c in gcfg.get("categories", []):
-            if c.get("label") == self.category_label:
-                close_ids = c.get("close_role_ids", []) or []
-                user_role_ids = {r.id for r in interaction.user.roles}
-                if any(rid in user_role_ids for rid in close_ids):
-                    allowed = True
-                break
-
-        # legacy staff role
-        staff_role = discord.utils.get(guild.roles, name=STAFF_ROLE)
-        if staff_role and staff_role in interaction.user.roles:
-            allowed = True
-
-        if not allowed:
+        # centralize permission check
+        if not user_can_manage_tickets(interaction.user, guild, gcfg, category_label=self.category_label, ticket_entry=entry):
             await interaction.response.send_message("⛔ Tu n'as pas la permission pour fermer ce ticket.", ephemeral=True)
             return
 
@@ -608,11 +641,23 @@ class TicketSelect(discord.ui.Select):
         # if category has close roles, give those roles access
         if cat_cfg:
             for rid in cat_cfg.get("close_role_ids", []) or []:
-                role = guild.get_role(int(rid))
+                try:
+                    role = guild.get_role(int(rid))
+                except Exception:
+                    role = None
                 if role:
                     overwrites[role] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
 
-        # legacy staff
+        # staff roles from config
+        try:
+            for rid in cfg.get("staff_role_ids", []) or []:
+                role = guild.get_role(int(rid))
+                if role:
+                    overwrites[role] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
+        except Exception:
+            logger.exception("Erreur lors de l'ajout des overwrites pour staff roles configurés")
+
+        # legacy staff (fallback)
         staff_role = discord.utils.get(guild.roles, name=STAFF_ROLE)
         if staff_role:
             overwrites[staff_role] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
@@ -931,6 +976,63 @@ async def show_category_roles(interaction: discord.Interaction, label: str):
     await interaction.response.send_message("⚠️ Catégorie non trouvée.", ephemeral=True)
 
 
+# ---------------- New commands to manage staff roles (requested) ----------------
+@bot.tree.command(name="add-staff-role", description="Ajouter un rôle global 'staff' autorisé pour les actions tickets (admin only)")
+@app_commands.describe(role="Rôle à ajouter comme staff")
+async def add_staff_role(interaction: discord.Interaction, role: discord.Role):
+    if not is_admin(interaction):
+        await interaction.response.send_message("❌ Tu dois être administrateur pour utiliser cette commande.", ephemeral=True)
+        return
+    cfg = get_gcfg(GCFG, interaction.guild.id)
+    lst = cfg.get("staff_role_ids", []) or []
+    if int(role.id) in lst:
+        await interaction.response.send_message("⚠️ Ce rôle est déjà configuré comme staff.", ephemeral=True)
+        return
+    lst.append(int(role.id))
+    cfg["staff_role_ids"] = lst
+    await save_config(GCFG)
+    bot.add_view(TicketView(interaction.guild.id, cfg.get("categories", [])))
+    await interaction.response.send_message(f"✅ {role.mention} ajouté comme rôle staff pour ce bot.", ephemeral=True)
+
+
+@bot.tree.command(name="remove-staff-role", description="Retirer un rôle global 'staff' (admin only)")
+@app_commands.describe(role="Rôle à retirer des staff")
+async def remove_staff_role(interaction: discord.Interaction, role: discord.Role):
+    if not is_admin(interaction):
+        await interaction.response.send_message("❌ Tu dois être administrateur pour utiliser cette commande.", ephemeral=True)
+        return
+    cfg = get_gcfg(GCFG, interaction.guild.id)
+    lst = cfg.get("staff_role_ids", []) or []
+    if int(role.id) not in lst:
+        await interaction.response.send_message("⚠️ Ce rôle n'était pas configuré comme staff.", ephemeral=True)
+        return
+    lst = [rid for rid in lst if rid != int(role.id)]
+    cfg["staff_role_ids"] = lst
+    await save_config(GCFG)
+    bot.add_view(TicketView(interaction.guild.id, cfg.get("categories", [])))
+    await interaction.response.send_message(f"✅ {role.mention} retiré des rôles staff pour ce bot.", ephemeral=True)
+
+
+@bot.tree.command(name="list-staff-roles", description="Lister les rôles staff configurés pour ce serveur")
+async def list_staff_roles(interaction: discord.Interaction):
+    if not is_admin(interaction):
+        await interaction.response.send_message("❌ Tu dois être administrateur pour utiliser cette commande.", ephemeral=True)
+        return
+    cfg = get_gcfg(GCFG, interaction.guild.id)
+    lst = cfg.get("staff_role_ids", []) or []
+    mentions = []
+    for rid in lst:
+        r = interaction.guild.get_role(int(rid))
+        if r:
+            mentions.append(r.mention)
+        else:
+            mentions.append(f"(id:{rid})")
+    if not mentions:
+        await interaction.response.send_message("Aucun rôle staff configuré.", ephemeral=True)
+    else:
+        await interaction.response.send_message(f"Rôles staff configurés : {', '.join(mentions)}", ephemeral=True)
+
+
 # ---------------- Events ----------------
 async def migrate_open_tickets_for_guild(gcfg, guild: discord.Guild):
     """
@@ -1156,11 +1258,6 @@ async def on_ready():
 
 
 
-# ---------- Slash /support (public) ----------
-@bot.tree.command(name="support", description="🎫 Ouvrir un ticket support")
-async def support(interaction: discord.Interaction):
-    cfg = get_gcfg(GCFG, interaction.guild.id)
-    await interaction.response.send_message(embed=build_support_embed(), view=TicketView(interaction.guild.id, cfg.get("categories", [])), ephemeral=False)
 
 
 # ------------------ Nouveaux: modify / move / help ------------------
@@ -1355,17 +1452,16 @@ async def move_category(interaction: discord.Interaction, label: str, position: 
 async def help_support(interaction: discord.Interaction):
     embed = discord.Embed(
         title="🆘 FastSupport — Aide",
-        description="Voici la liste des commandes et fonctionnalités disponibles.",
+        description="Voici la liste des commandes et fonctionnalités disponibles.\n"
+                    "PS: Création d'une catégorie \"Ticket\" et d'un salon \"📂・ticket-logs\" automatiquement lors d'un création d'un ticket, pour la 1ere fois",
         color=discord.Color.from_rgb(54, 57, 63)
     )
 
 
 
     embed.add_field(
-        name="🛠️ Administration",
+        name="🛠️ Administration (admin only)",
         value=(
-            "• `/help` — Afficher la listes des commandes\n"
-            "• `/support` — Ouvrir un ticket support\n"
             "• `/set-channel` — Définir le salon support\n"
             "• `/send-embed` — Envoyer le message support\n"
             "• `/add-category` — Ajouter une catégorie\n"
@@ -1378,19 +1474,24 @@ async def help_support(interaction: discord.Interaction):
     )
 
     embed.add_field(
-        name="👥 Gestion des rôles",
+        name="👥 Gestion des rôles (admin only)",
         value=(
             "• `/set-category-notify` — Rôle ping à l’ouverture du ticket\n"
             "• `/add-category-close-role` — Autoriser un rôle à fermer le ticket\n"
             "• `/remove-category-close-role` — Retirer l’autorisation à fermer le ticket\n"
-            "• `/show-category-roles` — Voir les rôles d’une catégorie"
+            "• `/show-category-roles` — Voir les rôles  d’une catégorie\n"
+            "• `/list-staff-role` — Voir les rôles staff config\n"
+            "• `/add-staff-role` — Ajouter un rôle staff\n"
+            "• `/remove-staff-role` — Retirer un rôle staff"
+
         ),
         inline=False
     )
 
     embed.add_field(
-    name="🔐 Commandes utiles",
+    name="🔐 Commandes utiles (admin et staff only)", 
     value=(
+        "• `/help` — Afficher la listes des commandes\n"
         "• `!close` — Fermer le ticket\n"
         "• `!add @user` — Ajouter un membre au ticket\n"
         "• `!remove @user` — Retirer un membre du ticket\n"
